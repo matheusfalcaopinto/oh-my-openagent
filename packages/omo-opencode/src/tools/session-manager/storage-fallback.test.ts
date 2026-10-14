@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test, type Mock } from "bun:test"
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -28,11 +28,6 @@ mock.module("./constants", () => ({
   TOOL_NAME_PREFIX: "session_",
 }))
 
-mock.module("../../shared/opencode-storage-detection", () => ({
-  isSqliteBackend: () => sqliteBackend,
-  resetSqliteBackendCache: () => {},
-}))
-
 mock.module("../../shared/opencode-message-dir", () => ({
   getMessageDir: (sessionID: string) => {
     if (!sessionID.startsWith("ses_")) return null
@@ -56,6 +51,9 @@ afterAll(() => {
 })
 
 const storage = await import("./storage")
+// Use the resolved namespace consumed by cached storage to choose the backend per test.
+const storageDetection: typeof import("../../shared/opencode-storage-detection") =
+  await import(join(import.meta.dir, "../../shared/opencode-storage-detection.ts"))
 
 function createSdkUnavailableError(message: string): Error {
   return new Error(message)
@@ -90,16 +88,18 @@ function createSessionTodo(sessionID: string, items: Array<Record<string, unknow
 }
 
 describe("session-manager storage fallback", () => {
+  let backendSpy: Mock<() => boolean> | undefined
   const mockClient = {
     session: {
       list: mock((): Promise<unknown> => Promise.resolve({ data: [] })),
-      messages: mock((): Promise<unknown> => Promise.resolve({ data: [] })),
+      messages: mock((_request: { path: { id: string } }): Promise<unknown> => Promise.resolve({ data: [] })),
       todo: mock((): Promise<unknown> => Promise.resolve({ data: [] })),
     },
   }
 
   beforeEach(() => {
     sqliteBackend = true
+    backendSpy = spyOn(storageDetection, "isSqliteBackend").mockImplementation(() => sqliteBackend)
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true })
     mkdirSync(TEST_DIR, { recursive: true })
     mkdirSync(TEST_MESSAGE_STORAGE, { recursive: true })
@@ -114,6 +114,7 @@ describe("session-manager storage fallback", () => {
   })
 
   afterEach(() => {
+    backendSpy?.mockRestore()
     storage.resetStorageClient()
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true })
   })

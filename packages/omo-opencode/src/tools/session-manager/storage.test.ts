@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, afterAll, mock } from "bun:test"
+import { describe, test, expect, beforeEach, afterEach, afterAll, mock, spyOn, type Mock } from "bun:test"
 import { mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -26,11 +26,6 @@ mock.module("./constants", () => ({
   SESSION_INFO_DESCRIPTION: "test",
   SESSION_DELETE_DESCRIPTION: "test",
   TOOL_NAME_PREFIX: "session_",
-}))
-
-mock.module("../../shared/opencode-storage-detection", () => ({
-  isSqliteBackend: () => sqliteBackend,
-  resetSqliteBackendCache: () => {},
 }))
 
 mock.module("../../shared/opencode-storage-paths", () => ({
@@ -68,10 +63,15 @@ const { getAllSessions, getMessageDir, sessionExists, readSessionMessages, readS
   await import("./storage")
 
 const storage = await import("./storage")
+// Use the resolved namespace consumed by cached storage to choose the backend per test.
+const storageDetection: typeof import("../../shared/opencode-storage-detection") =
+  await import(join(import.meta.dir, "../../shared/opencode-storage-detection.ts"))
 
 describe("session-manager storage", () => {
+  let backendSpy: Mock<() => boolean> | undefined
   beforeEach(() => {
     sqliteBackend = false
+    backendSpy = spyOn(storageDetection, "isSqliteBackend").mockImplementation(() => sqliteBackend)
     if (existsSync(TEST_DIR)) {
       rmSync(TEST_DIR, { recursive: true, force: true })
     }
@@ -84,6 +84,7 @@ describe("session-manager storage", () => {
   })
 
   afterEach(() => {
+    backendSpy?.mockRestore()
     sqliteBackend = false
     storage.resetStorageClient()
     if (existsSync(TEST_DIR)) {
@@ -320,7 +321,10 @@ describe("session-manager storage", () => {
 })
 
 describe("session-manager storage - getMainSessions", () => {
+  let backendSpy: Mock<() => boolean> | undefined
   beforeEach(() => {
+    sqliteBackend = false
+    backendSpy = spyOn(storageDetection, "isSqliteBackend").mockImplementation(() => sqliteBackend)
     if (existsSync(TEST_DIR)) {
       rmSync(TEST_DIR, { recursive: true, force: true })
     }
@@ -333,6 +337,9 @@ describe("session-manager storage - getMainSessions", () => {
   })
 
   afterEach(() => {
+    backendSpy?.mockRestore()
+    sqliteBackend = false
+    storage.resetStorageClient()
     if (existsSync(TEST_DIR)) {
       rmSync(TEST_DIR, { recursive: true, force: true })
     }
@@ -524,6 +531,7 @@ describe("session-manager storage - getMainSessions", () => {
 })
 
 describe("session-manager storage - SDK path (beta mode)", () => {
+  let backendSpy: Mock<() => boolean> | undefined
   const mockClient = {
     session: {
       list: mock((): Promise<unknown> => Promise.resolve({ data: [] })),
@@ -533,10 +541,21 @@ describe("session-manager storage - SDK path (beta mode)", () => {
   }
 
   beforeEach(() => {
+    sqliteBackend = true
+    backendSpy = spyOn(storageDetection, "isSqliteBackend").mockImplementation(() => sqliteBackend)
     // Reset mocks
     mockClient.session.list.mockClear()
     mockClient.session.messages.mockClear()
     mockClient.session.todo.mockClear()
+  })
+
+  afterEach(() => {
+    backendSpy?.mockRestore()
+    sqliteBackend = false
+    storage.resetStorageClient()
+    if (existsSync(TEST_DIR)) {
+      rmSync(TEST_DIR, { recursive: true, force: true })
+    }
   })
 
   test("getMainSessions uses SDK when beta mode is enabled", async () => {
@@ -548,12 +567,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
     mockClient.session.list.mockImplementation(() => Promise.resolve({ data: mockSessions }))
 
     // Mock isSqliteBackend to return true
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
-
-    // Re-import to get fresh module with mocked isSqliteBackend
     const { setStorageClient, getMainSessions } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
 
@@ -572,11 +585,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
       { id: "ses_trail_sdk", directory: "/path/to/projectA", parentID: null, time: { created: 1000, updated: 2000 } },
     ]
     mockClient.session.list.mockImplementation(() => Promise.resolve({ data: mockSessions }))
-
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
 
     const { setStorageClient, getMainSessions } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
@@ -597,11 +605,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
     ]
     mockClient.session.list.mockImplementation(() => Promise.resolve({ data: mockSessions }))
 
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
-
     const { setStorageClient, getAllSessions } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
 
@@ -621,11 +624,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
       { id: "ses_mid", directory: "/test", time: { created: 1500, updated: 2000 } },
     ]
     mockClient.session.list.mockImplementation(() => Promise.resolve({ data: mockSessions }))
-
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
 
     const { setStorageClient, getAllSessions } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
@@ -651,11 +649,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
     ]
     mockClient.session.messages.mockImplementation(() => Promise.resolve({ data: mockMessages }))
 
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
-
     const { setStorageClient, readSessionMessages } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
 
@@ -679,11 +672,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
     ]
     mockClient.session.todo.mockImplementation(() => Promise.resolve({ data: mockTodos }))
 
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
-
     const { setStorageClient, readSessionTodos } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
 
@@ -703,11 +691,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
     // given
     mockClient.session.messages.mockImplementation(() => Promise.reject(new Error("API error")))
 
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
-
     const { setStorageClient, readSessionMessages } = await import("./storage")
     setStorageClient(unsafeTestValue<Parameters<typeof setStorageClient>[0]>(mockClient))
 
@@ -716,11 +699,6 @@ describe("session-manager storage - SDK path (beta mode)", () => {
 
   test("SDK path returns empty array when client is not set", async () => {
     //#given beta mode enabled but no client set
-    mock.module("../../shared/opencode-storage-detection", () => ({
-      isSqliteBackend: () => true,
-      resetSqliteBackendCache: () => {},
-    }))
-
     //#when client is explicitly cleared and messages are requested
     const { resetStorageClient, readSessionMessages } = await import("./storage")
     resetStorageClient()
