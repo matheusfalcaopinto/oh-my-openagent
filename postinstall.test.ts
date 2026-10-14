@@ -2,11 +2,11 @@
 
 import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { delimiter } from "node:path"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const postinstallPath = fileURLToPath(new URL("./postinstall.mjs", import.meta.url))
 const RENAME_NOTICE =
@@ -22,11 +22,13 @@ type PostinstallRun = {
   stderr: string
 }
 
-function runPostinstallInFixtureEnv(options: { readonly pathPrefix?: string; readonly timeoutMs?: number } = {}): PostinstallRun {
+function runPostinstallInFixtureEnv(options: { readonly pathPrefix?: string; readonly timeoutMs?: number; readonly expression?: string } = {}): PostinstallRun {
   const fixtureHome = mkdtempSync(join(tmpdir(), "omo-postinstall-fixture-"))
   const inheritedPath = process.env.PATH ?? ""
   try {
-    const result = spawnSync(process.execPath, [postinstallPath], {
+    mkdirSync(join(fixtureHome, "tmp"))
+    const args = options.expression === undefined ? [postinstallPath] : ["--eval", options.expression]
+    const result = spawnSync(process.execPath, args, {
       encoding: "utf8",
       timeout: options.timeoutMs,
       env: {
@@ -34,13 +36,30 @@ function runPostinstallInFixtureEnv(options: { readonly pathPrefix?: string; rea
         PATH: options.pathPrefix === undefined ? inheritedPath : `${options.pathPrefix}${delimiter}${inheritedPath}`,
         HOME: fixtureHome,
         USERPROFILE: fixtureHome,
+        XDG_DATA_HOME: join(fixtureHome, "data"),
+        XDG_CONFIG_HOME: join(fixtureHome, "config"),
+        XDG_STATE_HOME: join(fixtureHome, "state"),
         XDG_CACHE_HOME: join(fixtureHome, "cache"),
+        TMPDIR: join(fixtureHome, "tmp"),
+        TEMP: join(fixtureHome, "tmp"),
+        TMP: join(fixtureHome, "tmp"),
       },
     })
     return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" }
   } finally {
     rmSync(fixtureHome, { recursive: true, force: true })
   }
+}
+
+function writeVersionOpencodeShim(output: string): string {
+  const binDir = mkdtempSync(join(tmpdir(), "omo-postinstall-version-opencode-"))
+  const scriptPath = join(binDir, "version.cjs")
+  writeFileSync(scriptPath, `process.stdout.write(${JSON.stringify(output)});\n`)
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+  writeFileSync(join(binDir, "opencode"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(scriptPath)}\n`)
+  chmodSync(join(binDir, "opencode"), 0o755)
+  writeFileSync(join(binDir, "opencode.cmd"), `@"${process.execPath}" "${scriptPath}"\r\n`)
+  return binDir
 }
 
 function writeHangingOpencodeShim(): string {
@@ -70,10 +89,17 @@ function countNativeNotices(output: string): number {
 }
 
 describe("postinstall rename notice", () => {
-  test("names the install line of the package's own channel", async () => {
-    const { nativeNotice } = await import("./postinstall.mjs")
-    expect(nativeNotice("5.0.0")).toEndWith("bun add -g omo-ai")
-    expect(nativeNotice("5.0.0-beta.90")).toEndWith("bun add -g omo-ai@beta")
+  test("names the install line of the package's own channel", () => {
+    const run = runPostinstallInFixtureEnv({
+      expression: `import(${JSON.stringify(pathToFileURL(postinstallPath).href)}).then(({ nativeNotice }) => console.log(JSON.stringify([nativeNotice("5.0.0"), nativeNotice("5.0.0-beta.90")])));`,
+    })
+    const notices: unknown = JSON.parse(run.stdout.trim().split("\n").at(-1) ?? "null")
+
+    expect(run.status).toBe(0)
+    expect(notices).toEqual([
+      expect.stringMatching(/bun add -g omo-ai$/),
+      expect.stringMatching(/bun add -g omo-ai@beta$/),
+    ])
   })
 
   test("announces the omo-agent-toolkit rename exactly once", () => {
@@ -128,5 +154,36 @@ describe("postinstall rename notice", () => {
     expect(countNoticeLines(secondRun.stdout)).toBe(1)
     expect(countNativeNotices(firstRun.stdout)).toBe(1)
     expect(countNativeNotices(secondRun.stdout)).toBe(1)
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
+})
+
+describe("postinstall OpenCode version probe", () => {
+  test.each([
+    ["1.18.31", false],
+    ["v1.18.31", false],
+    ["1.4.0-beta.1", false],
+    ["2.0.28", false],
+    ["v2.0.28", false],
+    ["opencode v2.0.28", false],
+    ["opencode 2.0.28", false],
+    ["opencode v1.18.31", false],
+    ["opencode v2.0.28-beta.1+build.3\n", false],
+    ["1.3.99", true],
+    ["v1.3.99", true],
+    ["1.3.99-beta.1", true],
+    ["opencode v1.3.99-beta.1", true],
+    ["", false],
+    ["unexpected diagnostic", false],
+    ["configuration migration 0.1.0", false],
+  ] as const)("checks the minimum version for %s", (output, warns) => {
+    const versionBinDir = writeVersionOpencodeShim(output)
+    try {
+      const run = runPostinstallInFixtureEnv({ pathPrefix: versionBinDir })
+
+      expect(run.status).toBe(0)
+      expect(run.stderr.includes("requires OpenCode >=")).toBe(warns)
+    } finally {
+      rmSync(versionBinDir, { recursive: true, force: true })
+    }
   }, SUBPROCESS_TEST_TIMEOUT_MS)
 })

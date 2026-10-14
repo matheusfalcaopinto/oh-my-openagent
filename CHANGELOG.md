@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Installing with OpenCode v2 no longer reports that your version is too old.** The installation check recognizes the native `opencode v2.x.x` version banner while retaining the existing minimum version requirement.
+
 **The plugin's cached OpenCode version check no longer leaves native libraries in your temporary directory.** Each command probe uses its own temporary directory and removes it after success, failure, or timeout.
 
 **Daemon-hosted background tasks keep running when their parent exits or starts a new session.** The parent detaches without aborting their turns. On `/new` or exit, one notice names the old session and the `omo --resume` command to collect results; children stay owned by that session. Local in-process and stdio children retain their shutdown behavior. ([#8517](https://github.com/code-yeongyu/oh-my-openagent/issues/8517), [#10018](https://github.com/code-yeongyu/oh-my-openagent/issues/10018))
