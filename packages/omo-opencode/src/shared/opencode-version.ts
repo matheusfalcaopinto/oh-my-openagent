@@ -1,6 +1,7 @@
 import { isRecord } from "@oh-my-opencode/utils"
 import { execSync } from "child_process"
-import { existsSync, readFileSync, realpathSync } from "fs"
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "fs"
+import { tmpdir } from "os"
 import { dirname, join } from "path"
 
 /**
@@ -48,7 +49,17 @@ export type OpenCodeVersionDeps = {
 }
 
 const defaultDeps: OpenCodeVersionDeps = {
-  execCommand: (command, options) => execSync(command, options),
+  execCommand: (command, options) => {
+    const probeTempDir = mkdtempSync(join(tmpdir(), "omo-opencode-version-"))
+    try {
+      return execSync(command, {
+        ...options,
+        env: { ...process.env, TMPDIR: probeTempDir, TEMP: probeTempDir, TMP: probeTempDir },
+      })
+    } finally {
+      rmSync(probeTempDir, { recursive: true, force: true })
+    }
+  },
   getBinaryPath: () => {
     const envPath = process.env.OPENCODE_BIN_PATH
     if (envPath) return envPath

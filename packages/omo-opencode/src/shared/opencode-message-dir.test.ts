@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from "bun:test"
 import { mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto"
 
 const TEST_STORAGE = join(tmpdir(), `omo-msgdir-test-${randomUUID()}`)
 const TEST_MESSAGE_STORAGE = join(TEST_STORAGE, "message")
-let sqliteBackend = false
 
 mock.module("./opencode-storage-paths", () => ({
   OPENCODE_STORAGE: TEST_STORAGE,
@@ -15,18 +14,12 @@ mock.module("./opencode-storage-paths", () => ({
   SESSION_STORAGE: join(TEST_STORAGE, "session"),
 }))
 
-mock.module("./opencode-storage-detection", () => ({
-  isSqliteBackend: () => sqliteBackend,
-  resetSqliteBackendCache: () => {},
-}))
-
 afterAll(() => { mock.restore() })
 
 const { getMessageDir } = await import("./opencode-message-dir")
 
 describe("getMessageDir", () => {
   beforeEach(() => {
-    sqliteBackend = false
     mkdirSync(TEST_MESSAGE_STORAGE, { recursive: true })
   })
 
@@ -75,17 +68,25 @@ describe("getMessageDir", () => {
     expect(result).toBe(sessionDir)
   })
 
-  it("returns file fallback path even when SQLite backend is active", () => {
+  it("returns file fallback path even when SQLite backend is active", async () => {
     //#given
-    sqliteBackend = true
-    const sessionDir = join(TEST_MESSAGE_STORAGE, "subdir", "ses_123")
-    mkdirSync(sessionDir, { recursive: true })
+    // Keep the resolved detector's SQLite context local to this case.
+    const storageDetection: typeof import("./opencode-storage-detection") =
+      await import(join(import.meta.dir, "opencode-storage-detection"))
+    const backendSpy = spyOn(storageDetection, "isSqliteBackend").mockReturnValue(true)
+    try {
+      expect(storageDetection.isSqliteBackend()).toBe(true)
+      const sessionDir = join(TEST_MESSAGE_STORAGE, "subdir", "ses_123")
+      mkdirSync(sessionDir, { recursive: true })
 
-    //#when
-    const result = getMessageDir("ses_123")
+      //#when
+      const result = getMessageDir("ses_123")
 
-    //#then
-    expect(result).toBe(sessionDir)
+      //#then
+      expect(result).toBe(sessionDir)
+    } finally {
+      backendSpy.mockRestore()
+    }
   })
 
   it("returns null for path traversal attempts with ..", () => {

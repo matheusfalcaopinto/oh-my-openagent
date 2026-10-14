@@ -1,5 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test"
-import { join } from "node:path"
+import { spawnSync } from "node:child_process"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { delimiter, join } from "node:path"
 import {
   parseVersion,
   compareVersions,
@@ -10,6 +13,64 @@ import {
   MINIMUM_OPENCODE_VERSION,
   OPENCODE_NATIVE_AGENTS_INJECTION_VERSION,
 } from "./opencode-version"
+
+type ProbeReceipt = { directory: string; artifactPath: string; pid: number }
+
+function parseProbeReceipt(text: string): ProbeReceipt {
+  const value: unknown = JSON.parse(text)
+  if (
+    typeof value !== "object" || value === null ||
+    !("directory" in value) || typeof value.directory !== "string" ||
+    !("artifactPath" in value) || typeof value.artifactPath !== "string" ||
+    !("pid" in value) || typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid <= 0
+  ) throw new Error("invalid version probe receipt")
+  return { directory: value.directory, artifactPath: value.artifactPath, pid: value.pid }
+}
+
+function createProbeFixture() {
+  const root = mkdtempSync(join(tmpdir(), "omo-version-probe-fixture-"))
+  const home = join(root, "home")
+  const temp = join(root, "tmp")
+  const bin = join(root, "bin")
+  for (const directory of [home, temp, bin]) mkdirSync(directory)
+  const receiptPath = join(root, "receipt.jsonl")
+  const sentinel = join(temp, "caller-owned.txt")
+  writeFileSync(sentinel, "caller-owned")
+  const scriptPath = join(bin, "opencode.cjs")
+  writeFileSync(scriptPath, [
+    'const fs = require("node:fs");',
+    'const directory = require("node:os").tmpdir();',
+    'const artifactPath = require("node:path").join(directory, "native-version-artifact.so");',
+    'fs.writeFileSync(artifactPath, "native extraction");',
+    'fs.appendFileSync(process.env.OMO_VERSION_PROBE_RECEIPT, JSON.stringify({ directory, artifactPath, pid: process.pid }) + "\\n");',
+    'if (process.env.OMO_VERSION_PROBE_MODE === "success") process.stdout.write("opencode v2.0.28\\n");',
+    'else if (process.env.OMO_VERSION_PROBE_MODE === "error") process.exit(17);',
+    'else { process.on("SIGTERM", () => process.exit(0)); setInterval(() => {}, 1000); }',
+    "",
+  ].join("\n"))
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
+  writeFileSync(join(bin, "opencode"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(scriptPath)}\n`)
+  chmodSync(join(bin, "opencode"), 0o755)
+  writeFileSync(join(bin, "opencode.cmd"), `@"${process.execPath}" "${scriptPath}"\r\n`)
+  return { root, home, temp, bin, receiptPath, sentinel }
+}
+
+function cleanupProbeFixture(fixture: ReturnType<typeof createProbeFixture>): void {
+  try {
+    if (existsSync(fixture.receiptPath)) {
+      for (const line of readFileSync(fixture.receiptPath, "utf8").trim().split("\n")) {
+        const { pid } = parseProbeReceipt(line)
+        try {
+          process.kill(pid, "SIGKILL")
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error
+        }
+      }
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true })
+  }
+}
 
 describe("opencode-version", () => {
   describe("parseVersion", () => {
@@ -236,6 +297,54 @@ describe("opencode-version", () => {
       // then version detection remains fail-safe
       expect(result).toBeNull()
     })
+
+    test.each([
+      ["success", "2.0.28"],
+      ["error", null],
+      ["timeout", null],
+    ] as const)("cleans native extraction files after a %s probe", (mode, expectedVersion) => {
+      const fixture = createProbeFixture()
+      try {
+        const env: NodeJS.ProcessEnv = {
+          PATH: `${fixture.bin}${delimiter}${process.env.PATH ?? ""}`,
+          HOME: fixture.home,
+          USERPROFILE: fixture.home,
+          XDG_DATA_HOME: join(fixture.home, "data"),
+          XDG_CONFIG_HOME: join(fixture.home, "config"),
+          XDG_STATE_HOME: join(fixture.home, "state"),
+          XDG_CACHE_HOME: join(fixture.home, "cache"),
+          TMPDIR: fixture.temp,
+          TEMP: fixture.temp,
+          TMP: fixture.temp,
+          OMO_VERSION_PROBE_MODE: mode,
+          OMO_VERSION_PROBE_RECEIPT: fixture.receiptPath,
+        }
+        for (const key of ["SystemRoot", "SYSTEMROOT", "ComSpec", "COMSPEC", "PATHEXT", "windir"]) {
+          const value = process.env[key]
+          if (value !== undefined) env[key] = value
+        }
+        const moduleUrl = new URL("./opencode-version.ts", import.meta.url).href
+        const expression = `const { getOpenCodeVersion } = await import(${JSON.stringify(moduleUrl)}); const originalTemp = [process.env.TMPDIR, process.env.TEMP, process.env.TMP]; const version = getOpenCodeVersion(); const cachedVersion = getOpenCodeVersion(); console.log(JSON.stringify({ version, cachedVersion, originalTemp, afterTemp: [process.env.TMPDIR, process.env.TEMP, process.env.TMP] }));`
+        const run = spawnSync(process.execPath, ["--eval", expression], {
+          cwd: fixture.root, env, encoding: "utf8", timeout: 20_000,
+        })
+        expect(run.status).toBe(0)
+        const result: unknown = JSON.parse(run.stdout.trim())
+        expect(result).toEqual({
+          version: expectedVersion, cachedVersion: expectedVersion,
+          originalTemp: [fixture.temp, fixture.temp, fixture.temp],
+          afterTemp: [fixture.temp, fixture.temp, fixture.temp],
+        })
+        const receipts = readFileSync(fixture.receiptPath, "utf8").trim().split("\n")
+        expect(receipts).toHaveLength(1)
+        const receipt = parseProbeReceipt(receipts[0] ?? "null")
+        expect(existsSync(receipt.artifactPath)).toBe(false)
+        expect(existsSync(receipt.directory)).toBe(false)
+        expect(readFileSync(fixture.sentinel, "utf8")).toBe("caller-owned")
+      } finally {
+        cleanupProbeFixture(fixture)
+      }
+    }, 30_000)
   })
 
   describe("isOpenCodeVersionAtLeast", () => {

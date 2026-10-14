@@ -74,8 +74,9 @@ function checkOpenCodeVersion() {
       stdio: ["pipe", "pipe", "ignore"],
       timeout: OPENCODE_VERSION_PROBE_TIMEOUT_MS,
     });
-    const version = result.trim();
-    const ok = compareVersions(version, MIN_OPENCODE_VERSION);
+    // OpenCode v2 prefixes its version with "opencode v"; unknown output is not an old version.
+    const version = result.trim().match(/^(?:opencode\s+)?v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/i)?.[1] ?? null;
+    const ok = version === null || compareVersions(version, MIN_OPENCODE_VERSION);
     return { ok, version };
   } catch {
     return { ok: true, version: null };

@@ -113,7 +113,17 @@ export const KNOWN_BUILT_RUNTIMES = [
   "packages/omo-codex/plugin/skills/browser/runtime/omowright/page-bundle.js",
   "packages/omo-senpi/plugin/skills/browser/runtime/omowright/index.js",
   "packages/omo-senpi/plugin/skills/browser/runtime/omowright/page-bundle.js",
+  "packages/omo-native/plugin/skills/browser/runtime/omowright/index.js",
+  "packages/omo-native/plugin/skills/browser/runtime/omowright/page-bundle.js",
 ]
+
+const NATIVE_BUILT_RUNTIMES = KNOWN_BUILT_RUNTIMES.filter((runtime) => runtime.startsWith("packages/omo-native/"))
+
+/** Default CI builds stage Codex/Senpi; a separate native build must stage its complete pair. */
+export function requiredBuiltRuntimes(present: (relativePath: string) => boolean): string[] {
+  const nativeStaged = present("packages/omo-native/plugin/package.json") || NATIVE_BUILT_RUNTIMES.some(present)
+  return KNOWN_BUILT_RUNTIMES.filter((runtime) => nativeStaged || !NATIVE_BUILT_RUNTIMES.includes(runtime))
+}
 
 // Truly third-party npm-dependency bundles would be named here, one
 // comment per bundle. None are tracked today: git ls-files already keeps
@@ -130,22 +140,24 @@ export type BuiltRuntimeProbeVerdict = { scanned: string[]; failures: string[] }
 // absent runtime just means no build ran, but CI always builds before
 // running tests, so an absent KNOWN_BUILT_RUNTIMES file means the staging
 // path drifted and the guard silently lost coverage. When CI is set,
-// every known runtime must exist, and every scannable file discovered
+// every required runtime must exist, and every scannable file discovered
 // under a plugin skills runtime/omowright/ directory must be listed.
 export function evaluateBuiltRuntimeProbe(input: {
   known: readonly string[]
+  required?: readonly string[]
   present: (relativePath: string) => boolean
   discovered: readonly string[]
   ci: string | undefined
 }): BuiltRuntimeProbeVerdict {
   const scanned: string[] = []
   const failures: string[] = []
+  const required = new Set(input.required ?? input.known)
   for (const runtime of input.known) {
     if (input.present(runtime)) {
       scanned.push(runtime)
       continue
     }
-    if (input.ci !== undefined) {
+    if (input.ci !== undefined && required.has(runtime)) {
       failures.push(
         "CI: expected built runtime to exist: " +
           runtime +
@@ -246,9 +258,11 @@ export function collectShippedSourceFiles(): string[] {
   const files = listTrackedFiles().filter(
     (file) => isScannedSourceFile(file) && !THIRD_PARTY_EXCLUDED_BUNDLES.includes(file) && isUnderRoots(file, roots),
   )
+  const present = (runtime: string) => readSourceFile(path.join(WORKSPACE_ROOT, runtime)) !== null
   const probe = evaluateBuiltRuntimeProbe({
     known: KNOWN_BUILT_RUNTIMES,
-    present: (runtime) => readSourceFile(path.join(WORKSPACE_ROOT, runtime)) !== null,
+    required: requiredBuiltRuntimes(present),
+    present,
     discovered: discoverPluginBuiltRuntimes(),
     ci: process.env.CI,
   })

@@ -28,7 +28,7 @@ import {
 // destructuring; variable/const-folded module specifiers; Reflect.get(Bun, "connect").
 // This is a regression guard, not a complete data-flow or evasion detector.
 const ALLOWLIST: AllowlistEntry[] = [
-  ...["omo-codex", "omo-senpi"].flatMap((edition) => ["https", "tls"].map((module) => ({
+  ...["omo-codex", "omo-senpi", "omo-native"].flatMap((edition) => ["https", "tls"].map((module) => ({
     file: `packages/${edition}/plugin/skills/browser/runtime/omowright/index.js`,
     call: `__require("${module}")`,
     count: 1,
@@ -57,6 +57,12 @@ const ALLOWLIST: AllowlistEntry[] = [
     call: "tls.connect(options)",
     count: 1,
     reason: "bundled ws@8.21.3 WebSocket client: host and servername come from new URL(address).hostname (ws/lib/websocket.js:703-758,1083-1090); verified on Bun 1.4.2 in omowright#40",
+  },
+  {
+    file: "packages/omo-native/plugin/skills/browser/runtime/omowright/index.js",
+    call: "tls.connect(options)",
+    count: 1,
+    reason: "native payload copies the exact same staged ws@8.21.3 bundle as Codex/Senpi; host is new URL(address).hostname and default servername derives from that normalized host (ws/lib/websocket.js:703-758,1083-1090; omowright#40, senpi#3078).",
   },
 ]
 
@@ -255,6 +261,17 @@ describe("no raw TLS client calls in shipped source (CVE-2026-48618, Bun 1.4.2)"
         { path: "pkg/a.ts", content: "http2.connect(\n  baseUrl,\n);\nhttp2.connect( baseUrl );\n" },
       ]
       expect(evaluateShippedSource(scan, [pinnedCallEntry()])).toEqual({ offenders: [], stale: [] })
+    })
+
+    test("#given the native copy's three exact reviewed calls #when changed or duplicated #then raw calls and stale counts still fail", () => {
+      const file = "packages/omo-native/plugin/skills/browser/runtime/omowright/index.js"
+      const entries = ALLOWLIST.filter(entry => entry.file === file)
+      const content = 'import { createRequire } from "node:module"; const __require = createRequire(import.meta.url); const https = __require("https"); const tls = __require("tls"); tls.connect(options);'
+      expect(entries).toHaveLength(3)
+      expect(evaluateShippedSource([{ path: file, content }], entries)).toEqual({ offenders: [], stale: [] })
+      expect(evaluateShippedSource([{ path: file, content: content + ' tls.connect({ host: "unparsed.example" });' }], entries).offenders).toHaveLength(1)
+      expect(evaluateShippedSource([{ path: file, content: content + " tls.connect(options);" }], entries).stale.some(line => line.includes("found x2"))).toBe(true)
+      expect(evaluateShippedSource([{ path: file, content: content.replace("tls.connect(options);", "") }], entries).stale.some(line => line.includes("found x0"))).toBe(true)
     })
   })
 
