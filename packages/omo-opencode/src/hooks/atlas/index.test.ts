@@ -18,6 +18,7 @@ import {
 import { DEFAULT_SESSION_STATUS_TIMEOUT_MS } from "../../shared/session-idle-settle"
 import { SYSTEM_DIRECTIVE_PREFIX } from "../../shared/system-directive"
 import type { AtlasHookOptions, PendingTaskRef } from "./types"
+import { RETRY_DELAY_MS } from "./idle-constants"
 import { createAtlasHook } from "./index"
 import { createToolExecuteAfterHandler } from "./tool-execute-after"
 import { createToolExecuteBeforeHandler } from "./tool-execute-before"
@@ -45,6 +46,7 @@ describe("atlas hook", () => {
     }))
     const client = createOpencodeClient({ baseUrl: "http://localhost" })
     Reflect.set(client.session, "get", sessionGetMock)
+    Reflect.set(client.session, "status", mock(async () => ({ data: {} })))
     Reflect.set(client.session, "messages", mock(async () => ({ data: [] })))
     Reflect.set(client.session, "prompt", promptMock)
     Reflect.set(client.session, "promptAsync", promptMock)
@@ -2478,7 +2480,7 @@ session_id: ses_untrusted_999
 
         globalThis.setTimeout = ((callback: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) => {
           const normalized = typeof delay === "number" ? delay : 0
-          if (normalized >= 5000 && normalized !== DEFAULT_PROMPT_DISPATCH_TIMEOUT_MS) {
+          if (normalized === RETRY_DELAY_MS) {
             const timerID = originalSetTimeout(() => undefined, 0)
             const capturedCallback = typeof callback === "function"
               ? () => callback(...args)
@@ -2511,10 +2513,11 @@ session_id: ses_untrusted_999
       })
 
       async function firePendingTimers(): Promise<void> {
-        for (const [id, entry] of capturedTimers) {
+        // Newly scheduled retries belong to the next simulated timer turn.
+        for (const [id, entry] of [...capturedTimers]) {
           if (!entry.cleared) {
             capturedTimers.delete(id)
-            fakeNow += 6000
+            fakeNow += RETRY_DELAY_MS
             await entry.callback()
           }
         }
