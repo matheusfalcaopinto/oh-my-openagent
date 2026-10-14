@@ -143,7 +143,18 @@ describe("Gatekeeper check after notarization", () => {
   posixBashTest("fails when the ticket never arrives within the window", () => {
     const { root, env, binary } = notarySandbox(["Accepted"], [NOT_YET])
     try {
-      const result = runSigning(root, { ...env, GATEKEEPER_TIMEOUT_SECONDS: "1", GATEKEEPER_POLL_SECONDS: "0.2" }, binary)
+      // Deadline setup, then one assessment inside the window and one at its end.
+      const clock = join(root, "date-answers")
+      writeFileSync(clock, "100\n100\n100\n101\n")
+      const date = join(root, "bin", "date")
+      writeFileSync(date, `#!/bin/bash
+[ "$#" -eq 1 ] && [ "$1" = +%s ] || exit 1
+value=$(head -n 1 "${clock}")
+[ "$(wc -l < "${clock}")" -gt 1 ] && sed -i.bak 1d "${clock}"
+printf '%s\\n' "$value"
+`)
+      chmodSync(date, 0o755)
+      const result = runSigning(root, { ...env, GATEKEEPER_TIMEOUT_SECONDS: "1", GATEKEEPER_POLL_SECONDS: "0" }, binary)
       expect(result.status).toBe(1)
       expect(result.stderr).toContain("Gatekeeper does not accept")
       expect(spctlCalls(root)).toBeGreaterThan(1)
