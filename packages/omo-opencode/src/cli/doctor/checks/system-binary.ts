@@ -1,5 +1,5 @@
-import { existsSync, accessSync, constants } from "node:fs"
-import { homedir } from "node:os"
+import { existsSync, accessSync, constants, mkdtempSync, rmSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { extractSemverFromOutput } from "../../../shared/extract-semver"
 import { bunWhich } from "../../../shared/bun-which-shim"
@@ -153,9 +153,15 @@ export async function getOpenCodeVersion(
   binaryPath: string,
   platform: NodeJS.Platform = process.platform
 ): Promise<string | null> {
+  let temporaryDirectory: string | undefined
   try {
+    temporaryDirectory = mkdtempSync(join(tmpdir(), "omo-doctor-opencode-version-"))
     const command = buildVersionCommand(binaryPath, platform)
-    const result = await spawnWithTimeout(command, { stdout: "pipe", stderr: "pipe" })
+    const result = await spawnWithTimeout(command, {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, TMPDIR: temporaryDirectory, TEMP: temporaryDirectory, TMP: temporaryDirectory },
+    })
     if (result.timedOut || result.exitCode !== 0) return null
     return extractSemverFromOutput(result.stdout)
   } catch (error) {
@@ -164,6 +170,8 @@ export async function getOpenCodeVersion(
     }
 
     return null
+  } finally {
+    if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true })
   }
 }
 

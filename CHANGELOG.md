@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **The plugin's cached OpenCode version check no longer leaves native libraries in your temporary directory.** Each command probe uses its own temporary directory and removes it after success, failure, or timeout.
 
+**Running `doctor` no longer leaves OpenCode's native libraries in your temporary directory.** Each version subprocess owns a temporary directory and cleans it after success, failure, or timeout.
+
 **Daemon-hosted background tasks keep running when their parent exits or starts a new session.** The parent detaches without aborting their turns. On `/new` or exit, one notice names the old session and the `omo --resume` command to collect results; children stay owned by that session. Local in-process and stdio children retain their shutdown behavior. ([#8517](https://github.com/code-yeongyu/oh-my-openagent/issues/8517), [#10018](https://github.com/code-yeongyu/oh-my-openagent/issues/10018))
 
 **A child that stops answering no longer hangs a task indefinitely.** Stdio RPC requests have deadlines, and both process runners keep one heartbeat in flight. Three missed ten-second probes end a running child as `child-unresponsive`, preserve its transcript, and name how to inspect and rerun it in `task_output`. The last successful heartbeat appears as `last_seen_at` in the live task snapshot. ([#10017](https://github.com/code-yeongyu/oh-my-openagent/issues/10017))
